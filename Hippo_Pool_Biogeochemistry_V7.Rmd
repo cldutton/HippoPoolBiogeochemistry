@@ -1,0 +1,2301 @@
+---
+title: "Hippo Pool Biogeochemistry"
+author: "Christopher Dutton"
+date: "December 3, 2018"
+output: html_document
+
+---
+
+R markdown file to accompany the manuscript on hippo pool biogeochemistry from the Mara River.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+Load the required libraries
+
+```{r warning=FALSE, message=FALSE}
+library(plyr)
+library(dplyr)
+library(knitr)
+library(ggplot2)
+library(extrafont)
+loadfonts()
+library(PMCMR)
+library(ggrepel)
+library(reshape2)
+library(ggbiplot)
+library(ggthemes)
+library(FactoMineR)
+library(factoextra)
+library(dplyr)
+library(scales)
+library(car)
+library(broom)
+library(FSA)
+library(multcompView)
+library(cowplot)
+library(lubridate)
+library(pander)
+library(corrplot)
+library(corrgram)
+library(multcomp)
+library(kableExtra)
+library(gridGraphics)
+library(gridExtra)
+library(rcompanion)
+library(MVN)
+
+```
+
+Import and then clean up the data. Make sure that all the data files are in the same directory as the R Markdown file.
+
+```{r warning=FALSE, message=FALSE}
+
+## Ensure that the locations of the three data files are correct.
+HippoPool2016 <- read.csv("HippoPool2016.csv")
+rtcv3 <- read.csv("rtcv3.csv")
+HippoPoolDesc <- read.csv("HippoPoolDesc.csv")
+
+df <- HippoPool2016
+
+colClean1 <- function(x){ colnames(x) <- gsub("..ug.L.", "", colnames(x)); x } 
+df <- colClean1(df)
+colClean2 <- function(x){ colnames(x) <- gsub("..mg.L.", "", colnames(x)); x } 
+df <- colClean2(df)
+colClean3 <- function(x){ colnames(x) <- gsub("..umol.L.", "", colnames(x)); x } 
+df <- colClean3(df)
+colClean4 <- function(x){ colnames(x) <- gsub(".ppm", "", colnames(x)); x } 
+df <- colClean4(df)
+
+df$RT <- rtcv3$RT[match(df$Pool, rtcv3$Pool)] ## Add residence time category
+df$Density <- HippoPoolDesc$Density[match(df$Pool, HippoPoolDesc$Pool)] ## add density category
+
+```
+
+How are the different measured analytes correlated to one another?
+
+```{r warning=FALSE, message=FALSE, fig.keep="none"}
+library(corrplot)
+df.cor <- na.omit(df)
+M <- cor(df.cor[,4:22])
+
+par(cex=0.5)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(M, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", 
+         tl.col="black", tl.srt=45, tl.cex=1, 
+         diag=FALSE 
+)
+
+grab_grob <- function(){
+  grid.echo()
+  grid.grab()
+}
+
+g <- grab_grob()
+#grid.newpage()
+#arrangeGrob(g)
+# 
+ggsave(file="FigS1.tiff", g, width=6, height=5, units="in", compression="lzw", dpi=300)
+par(cex=1)
+```
+```{r warning=FALSE, message=FALSE}
+
+df.cor <- na.omit(df)
+M <- cor(df.cor[,4:22])
+
+par(cex=0.5)
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+corrplot(M, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", 
+         tl.col="black", tl.srt=45, tl.cex=1, 
+         diag=FALSE 
+)
+
+```
+
+How are the hippo pools related to each other by hippo density and water residence time?
+
+```{r warning=FALSE, message=FALSE}
+residencetime <- rtcv3
+
+residencetime$Density <- df$Density[match(residencetime$Pool, df$Pool)] ## add density
+
+plot <- ggplot(residencetime, aes(x=Hippo.Volume, y=log(ResidenceTime.s.), color=RT)) +
+  #theme_few() +
+  theme(text=element_text(size=12, family="Arial", color="black")) +
+  geom_text_repel(aes(label=residencetime$Pool), color="black") +
+  geom_vline(xintercept = as.numeric("0.0125"), linetype="dashed", size=1) +
+  geom_vline(xintercept = as.numeric("0.0001"), linetype="dashed", size=1) +
+  geom_hline(yintercept = as.numeric("8"), linetype="dashed", size=1) +
+  geom_hline(yintercept = as.numeric("12"), linetype="dashed", size=1) +
+  geom_point(size=1) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  labs(x="Hippo Density \n#Hippos / Pool Volume", y="Water \nResidence \nTime \nlog(seconds)") +
+  scale_color_manual(name="Pool Type \nWater Residence Time", values=c("#1b9e77", "#d95f02", "#7570b3","black"), breaks=c("High.HP", "Medium.HP", "Low.HP", "Pool.NoHP"),labels=c("Long - Hippo Pool", "Medium - Hippo Pool", "Short - Hippo Pool",  "Pool - No Hippos")) +
+  xlim(0, .023) + 
+  ylim(5, 16) +
+  geom_point(aes(shape=factor(residencetime$Density), colour=factor(residencetime$RT)), size=4) +
+  scale_shape_manual(values=c(0, 1, 2), breaks=c("High", "Low", "None", "NA"), labels=c("High", "Low", "None", "")) +
+  guides(shape=guide_legend(title="Hippo Density"))
+
+plot
+
+ggsave(file="Fig2.tiff", width=7, height=4, units="in", compression="lzw", dpi=300)
+
+```
+
+PCA on the log transformed and scaled analytes measured at the bottom of the pools
+
+```{r warning=FALSE, message=FALSE}
+df.b <- df[which(df$Location=="Benthic"),] ## only benthic files
+
+df.b$Pool<- gsub("Amani", "AMHP", df.b$Pool)
+df.b$Pool<- gsub("NBig", "NBIG", df.b$Pool)
+
+## log transform variables for normality
+log.b<-log(df.b[,4:22]+1)
+log.b$Pool<-df.b$Pool
+log.b$RT<-df.b$RT
+log.b$Density<-df.b$Density
+
+## remove any NAs
+log.b<-na.omit(log.b)
+
+## pca on just the analytes
+b.pca<-prcomp(log.b[,1:19], center = TRUE, scale. = TRUE)
+
+## plot the pca components
+plot(b.pca, type = "l")
+
+## summary of pca
+summary(b.pca)
+
+## Plot pca of benthic values
+g <- ggbiplot(b.pca, obs.scale = 1, var.scale = 1, 
+              groups = log.b$RT, ellipse = TRUE, ellipse.prob=0.95, 
+              circle = FALSE, varname.size=0, 
+              var.axes = FALSE) +
+  theme(legend.direction = 'vertical', legend.position = 'right') +
+  scale_color_manual(name="Pool Type & \nWater Residence Time", 
+                     values=c("#1b9e77", "#d95f02", "#7570b3","black"),
+                     breaks=c("High.HP", "Medium.HP", "Low.HP",  "Pool.NoHP"),
+                     labels=c("Hippo Pool - Long", "Hippo Pool - Medium", "Hippo Pool - Short", "Pool - No Hippos")) +
+  theme(text=element_text(size=10, family="Arial")) +
+  xlim(-7, 7.3) + 
+  ylim(-4, 4) +
+  geom_point(aes(shape=factor(log.b$Density), colour=factor(log.b$RT)), size=4) +
+  scale_shape_manual(values=c(0, 1, 2)) +
+  geom_text_repel(label=log.b$Pool, size=3) +
+  guides(shape=guide_legend(order=1, title="Hippo Density")) +
+  guides(color = guide_legend(order = 2))
+
+print(g)
+
+ggsave(file="Fig3.tiff", width=7, height=4, units="in", compression="lzw", dpi=300)
+
+# Contributions of variables to PC1
+fviz_contrib(b.pca, choice = "var", axes = 1, top = 10)
+# Contributions of variables to PC2
+fviz_contrib(b.pca, choice = "var", axes = 2, top = 10)
+
+# Percent contributions
+# head(var$contrib[,1:2], 19)
+
+var <- get_pca_var(b.pca)
+tbcontrib <- var$contrib[,1:2]
+
+Ksumm <- kable(tbcontrib, format="html", digits=c(1,1), col.names=c("PC1", "PC2"), caption="Table S1: Percent contributions of each variable to the first two principal components (PC) shown in Figure 3.")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F)
+
+
+# direction ordination
+g_c <- fviz_pca_var(b.pca, col.var = "contrib",
+             gradient.cols = c("#e66101", "#fdb863","#5e3c99", "#000000"),
+             repel=TRUE, labelsize=2) +
+             xlab("PC1") +
+             ylab("PC2") +
+             labs(color="Percent Contribution") 
+g_c + theme(text=element_text(size=8, family="Arial")) 
+
+
+ggsave(file="Fig4.tiff", width=4, height=4, units="in", compression="lzw", dpi=300)
+
+```
+
+Are the bottom measurements in hippo pools significantly different from one another? 
+Log transformed.
+
+```{r warning=FALSE, message=FALSE}
+
+df.b <- df[which(df$Location=="Benthic"),] ## only benthic files
+
+## log transform variables for normality
+log.b<-log(df.b[,4:22]+1)
+log.b$Pool<-df.b$Pool
+log.b$RT<-df.b$RT
+log.b$Density<-df.b$Density
+
+## Using the log transformed values from the bottom of the pools
+log.b.aov <- aov(TN + TP + NO3 + DOC + CH4 + CO2 + F + Br + SO4 + SRP + H2S + FEII + NH4 + BOD5 + Cl + Mg + K + Na ~ Density, data=log.b)
+summary(log.b.aov)
+
+## Tukey's test
+TukeyHSD(log.b.aov)
+
+## Check assumptions
+## Check for homogeneity of variances
+leveneTest(TN + TP + NO3 + DOC + CH4 + CO2 + F + Br + SO4 + SRP + H2S + FEII + NH4 + BOD5 + Cl + Mg + K + Na ~ Density, data = log.b)
+
+## Check for normality
+aov_residuals <- residuals(object = log.b.aov) ## extract residuals
+shapiro.test(x = aov_residuals ) ## Run Shapiro-Wilk test
+
+```
+
+Data is approximately normal BUT the data failed the Levene's test (p-value greater than 0.05). Variances are NOT homogenious. Need to use a non-parametric alternative to answer this question.  Welch's One-Way Test followed by Pairwise t test on the log transformed values. Welch's one-way test requires data to be normally distributed so we'll proceed with the log transformed data.  
+
+```{r}
+## now, do the anova test with no assumption of equal variances just for RT
+onewayresults <- oneway.test(TN + TP + NO3 + DOC + CH4 + CO2 + F + Br + SO4 + SRP + H2S + FEII + NH4 + BOD5 + Cl + Mg + K + Na ~ Density, data = log.b)
+
+## pairwise t test
+pairwiseresults <- pairwise.t.test(log.b$TN + log.b$TP + log.b$NO3 + log.b$DOC + log.b$CH4 + log.b$CO2 + log.b$F + log.b$Br + log.b$SO4 + log.b$SRP + log.b$H2S + log.b$FEII + log.b$NH4 + log.b$BOD5 + log.b$Cl + log.b$Mg + log.b$K + log.b$Na, log.b$Density, p.adjust.method = "holm", pool.sd = FALSE, data=log.b)
+
+onewayresults
+pairwiseresults
+
+pwp <- pairwiseresults$p.value
+
+pwp <- fullPTable(pwp)
+
+letters0 <- multcompLetters(pwp)
+letters0$Letters
+```
+
+Different densities of hippo pools are different from one another.  Low to high and none to high are significantly different.  No difference between none and low pools.
+
+****************************************************************************************
+Are hippo pools of different water residence times significantly different from one another? Log transformed bottom measured values. One-Way ANOVA followed by the Tukey HSD on the log transformed values.
+
+```{r warning=FALSE, message=FALSE}
+
+## Using the log transformed values from the bottom of the pools
+log.b.aov <- aov(TN + TP + NO3 + DOC + CH4 + CO2 + F + Br + SO4 + SRP + H2S + FEII + NH4 + BOD5 + Cl + Mg + K + Na ~ RT, data=log.b)
+summary(log.b.aov)
+
+## Tukey's test
+TukeyHSD(log.b.aov)
+
+## Check assumptions
+## Check for homogeneity of variances
+leveneTest(TN + TP + NO3 + DOC + CH4 + CO2 + F + Br + SO4 + SRP + H2S + FEII + NH4 + BOD5 + Cl + Mg + K + Na ~ RT, data = log.b)
+
+## Check for normality
+aov_residuals <- residuals(object = log.b.aov) ## extract residuals
+shapiro.test(x = aov_residuals ) ## Run Shapiro-Wilk test
+
+```
+
+Data is approximately normal BUT the data failed the Levene's test (p-value greater than 0.05). Variances are NOT homogenious. Need to use a non-parametric alternative to answer this question.  Welch's One-Way Test followed by Pairwise t test on the log transformed values.
+
+```{r warning=FALSE, message=FALSE}
+
+## now, do the anova test with no assumption of equal variances just for RT
+onewayresults <- oneway.test(TN + TP + NO3 + DOC + CH4 + CO2 + F + Br + SO4 + SRP + H2S + FEII + NH4 + BOD5 + Cl + Mg + K + Na ~ RT, data = log.b)
+
+## pairwise t test
+pairwiseresults <- pairwise.t.test(log.b$TN + log.b$TP + log.b$NO3 + log.b$DOC + log.b$CH4 + log.b$CO2 + log.b$F + log.b$Br + log.b$SO4 + log.b$SRP + log.b$H2S + log.b$FEII + log.b$NH4 + log.b$BOD5 + log.b$Cl + log.b$Mg + log.b$K + log.b$Na, log.b$RT,p.adjust.method = "holm", pool.sd = FALSE, data=log.b)
+
+onewayresults
+pairwiseresults
+
+pwp <- pairwiseresults$p.value
+
+pwp <- fullPTable(pwp)
+
+letters0 <- multcompLetters(pwp)
+letters0$Letters
+
+```
+
+With nonparametric tests, hippo pools of different residence times are significantly different from one another.  All pairs are significantly different except low residence time hippo pools and pools with no-hippos.
+
+What are the means and standard deviations for the analytes measured at the bottom of hippo pools?
+
+```{r warning=FALSE, message=FALSE}
+
+## Means and standard deviation of bottom values under different hippo densities
+bmeans <- aggregate(df.b[, 4:22], list(df.b$Density), mean, na.rm=TRUE)
+
+## transpose the datasheet
+bmeanst <- t(bmeans)
+bmeanst <-as.data.frame(bmeanst)
+colnames(bmeanst) <- as.character(unlist(bmeanst[1,]))
+bmeanst = bmeanst[-1, ]
+
+## now, SD 
+bsd <- aggregate(df.b[, 4:22], list(df.b$Density), sd, na.rm=TRUE)
+
+## transpose the datasheet
+bsdt <- t(bsd)
+bsdt <-as.data.frame(bsdt)
+colnames(bsdt) <- as.character(unlist(bsdt[1,]))
+bsdt = bsdt[-1, ]
+
+## now count number of groupings just to be sure
+mt_mean <- df.b %>% 
+  group_by(Density) %>% 
+  summarise(avg_count = n()) 
+pander(mt_mean)
+
+## merge by row names, reorder columns
+benthicsummary <- merge(bmeanst, bsdt, by=0, all=TRUE)
+bsummary <- benthicsummary[,c(1,2,5,3,6,4,7)]
+colClean1 <- function(x){ colnames(x) <- gsub(".x", ".Mean", colnames(x)); x } 
+bsummary <- colClean1(bsummary)
+colClean2 <- function(x){ colnames(x) <- gsub(".y", ".SD", colnames(x)); x } 
+bsummary <- colClean2(bsummary)
+rownames(bsummary) <- bsummary$Row.names
+bsummary <- bsummary[-1]
+Results_Benthic_Density_Summary <- bsummary
+bsummary[] <- lapply(bsummary, function(x) as.numeric(as.character(x)))
+```
+
+Log-transformed bottom values
+
+Density
+
+Welch One-Way Test (need normal distribution) followed by the Pairwise t-test.
+
+```{r warning=FALSE, message=FALSE}
+
+df.b <- df[which(df$Location=="Benthic"),] ## only benthic files
+
+## log transform variables for normality
+log.b<-log(df.b[,4:22]+1)
+log.b$Pool<-df.b$Pool
+log.b$RT<-df.b$RT
+log.b$Density<-df.b$Density
+
+## apply Welch One-Way to the entire set and output p values
+kwp <- apply(log.b[,1:19], 2, function(x) oneway.test(x ~ log.b[,22])$p.value)
+kwp <- t(kwp)
+kwp <- t(kwp)
+kwp <- as.data.frame(kwp)
+colnames(kwp) <- gsub("V1", "p-value", colnames(kwp)) 
+
+## now get the statistic
+kws <- apply(log.b[,1:19], 2, function(x) oneway.test(x ~ log.b[,22])$statistic)
+kws <- t(kws)
+kws <- t(kws)
+kws <- as.data.frame(kws)
+colnames(kws) <- gsub("V1", "F-statistic", colnames(kws)) 
+
+## merge two files together
+totalkwps <- merge(kwp,kws,by=0, all=TRUE)
+rownames(totalkwps) <- totalkwps$Row.names
+totalkwps<- totalkwps[-1]
+Results_Benthic_Density_OneWay <- totalkwps[c(2,1)]
+
+## Now, get the p-values for the pairwise t-test
+val <- colnames(log.b[,1:19])
+
+outr <- lapply(val, function(y) {
+pairwise.t.test(log.b[,y], log.b$Density, data=log.b, p.adjust.method="holm", pool.sd=FALSE)$p.value
+})
+
+outrr <- sapply(outr, function(x) {
+  mm <- melt(x)
+  mm$Comparison <- paste(mm$Var1, mm$Var2, sep="-")
+  mm <- mm[,3]
+  #as.data.frame(mm)
+})
+
+outrrr <- as.data.frame(t(outrr))
+
+comp <- melt(outr[1])
+comp$comparisons <- paste(comp$Var1, comp$Var2, sep="-")
+
+names(outrrr) <- comp$comparisons
+row.names(outrrr) <- val
+outrrr$`Low-Low` <- NULL
+
+Results_Benthic_Density_PW <- outrrr
+
+## Get groupings
+getletters <- function(val) 
+{
+  analyte <- val
+  outr <- pairwise.t.test(log.b[,val], log.b$Density, data=log.b, p.adjust.method="holm", pool.sd=FALSE)
+  pwp <- outr$p.value
+  pwp <- fullPTable(pwp)
+  letters0 <- multcompLetters(pwp)
+  letters0$Letters
+}
+outr <- lapply(val, getletters)
+
+pwresults<-as.data.frame(outr)
+names(pwresults) <- val
+pwresults <- t(pwresults)
+pwresults <- data.frame(pwresults)
+
+Results_Benthic_Density_PW_Groupings <- pwresults
+
+totalres <- merge(Results_Benthic_Density_OneWay, Results_Benthic_Density_PW, by="row.names")
+row.names(totalres) <- totalres$Row.names
+totalres$Row.names<-NULL
+totalres <- totalres[order(totalres$`p-value`),]
+TableS2_PW <- totalres
+write.csv(TableS2_PW, file="Results/TableS2_PW.csv")
+
+totalsum <- merge(Results_Benthic_Density_OneWay, Results_Benthic_Density_PW_Groupings, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum <- merge(bsummary, totalsum, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum$Pool.NoHP.Mean <- NULL
+totalsum$Pool.NoHP.SD <- NULL
+totalsum$Row.names <- NULL
+totalsum$Row.names.y <- NULL
+totalsum$'F-statistic' <- NULL
+totalsum <- totalsum[order(totalsum$`p-value`),]
+totalsum$`p-value` <- NULL
+totalsum <- totalsum[,c(1,2,7,3,4,9,5,6,8)]
+totalsum <- totalsum[,c(7,8,9,4,5,6,1,2,3)]
+Table1_PW <- totalsum
+write.csv(Table1_PW, file="Results/Table1_PW.csv")
+
+```
+```{r results='asis'}
+
+Ksumm <- kable(TableS2_PW, format="html", digits=2, col.names=c("F-statistic", "p-value", "High-Low", "High-Medium", "Low-Medium"), caption = "Table S2: Density Statistics, Bottom Measurements, Welch One-Way Test and Pairwise T Test")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, " " = 5))
+
+```
+```{r results='asis'}
+
+Ksumm <- kable(Table1_PW, format="html", digits=c(1,1,1,1,1,1,1,1,1), col.names=c("Mean", "SD", " ", "Mean", "SD", " ", "Mean", "SD", " "), caption="Table 1: Density Groupings, Bottom measurements, Welch One-Way Test and Pairwise T Test")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, "No Hippos" = 3, "Low-density" = 3, "High-density" = 3))
+
+```
+
+What are the means and standard deviations of hippo pools with different water residence times?
+
+```{r warning=FALSE, message=FALSE}
+## Means and standard deviation of bottom values under different water residence times
+bmeans <- aggregate(df.b[, 4:22], list(df.b$RT), mean, na.rm=TRUE)
+
+## transpose the datasheet
+bmeanst <- t(bmeans)
+bmeanst <-as.data.frame(bmeanst)
+colnames(bmeanst) <- as.character(unlist(bmeanst[1,]))
+bmeanst = bmeanst[-1, ]
+
+## now, SD 
+bsd <- aggregate(df.b[, 4:22], list(df.b$RT), sd, na.rm=TRUE)
+
+## transpose the datasheet
+bsdt <- t(bsd)
+bsdt <-as.data.frame(bsdt)
+colnames(bsdt) <- as.character(unlist(bsdt[1,]))
+bsdt = bsdt[-1, ]
+
+## now count number of groupings just to be sure
+mt_mean <- df.b %>% 
+  group_by(RT) %>% 
+  summarise(avg_count = n()) 
+pander(mt_mean)
+
+## merge by row names, reorder columns
+benthicsummarywrt <- merge(bmeanst, bsdt, by=0, all=TRUE)
+bsummarywrt <- benthicsummarywrt[,c(1,2,6,4,8,3,7,5,9)]
+colClean1 <- function(x){ colnames(x) <- gsub(".x", ".Mean", colnames(x)); x } 
+bsummarywrt <- colClean1(bsummarywrt)
+colClean2 <- function(x){ colnames(x) <- gsub(".y", ".SD", colnames(x)); x } 
+bsummarywrt <- colClean2(bsummarywrt)
+row.names(bsummarywrt) <- bsummarywrt$Row.names
+bsummarywrt <- bsummarywrt[-1]
+Results_Benthic_WRT_Summary <- bsummarywrt
+
+bsummarywrt[] <- lapply(bsummarywrt, function(x) as.numeric(as.character(x)))
+```
+
+Which bottom biogeochemical variables are significantly different between different hippo pool water residence times? 
+
+Log-transformed bottom values
+
+Water Residence Time Groupings
+
+Welch One-Way Test (need normal distribution) followed by the Pairwise t-test.
+
+```{r warning=FALSE, message=FALSE}
+
+df.b <- df[which(df$Location=="Benthic"),] ## only benthic files
+
+## log transform variables for normality
+log.b<-log(df.b[,4:22]+1)
+log.b$Pool<-df.b$Pool
+log.b$RT<-df.b$RT
+log.b$Density<-df.b$Density
+
+## remove no hippos water residence time grouping
+log.b <- subset(log.b, RT!="Pool.NoHP")
+
+## apply Welch One-Way to the entire set and output p values
+kwp <- apply(log.b[,1:19], 2, function(x) oneway.test(x ~ log.b[,21])$p.value)
+kwp <- t(kwp)
+kwp <- t(kwp)
+kwp <- as.data.frame(kwp)
+colnames(kwp) <- gsub("V1", "p-value", colnames(kwp)) 
+
+## now get the statistic
+kws <- apply(log.b[,1:19], 2, function(x) oneway.test(x ~ log.b[,21])$statistic)
+kws <- t(kws)
+kws <- t(kws)
+kws <- as.data.frame(kws)
+colnames(kws) <- gsub("V1", "F-statistic", colnames(kws)) 
+
+## merge two files together
+totalkwps <- merge(kwp,kws,by=0, all=TRUE)
+rownames(totalkwps) <- totalkwps$Row.names
+totalkwps<- totalkwps[-1]
+Results_Benthic_WRT_OneWay <- totalkwps[c(2,1)]
+
+## Now, get the p-values for the pairwise t-test
+val <- colnames(log.b[,1:19])
+
+outr <- lapply(val, function(y) {
+pairwise.t.test(log.b[,y], log.b$RT, data=log.b, p.adjust.method="holm", pool.sd=FALSE)$p.value
+})
+
+outrr <- sapply(outr, function(x) {
+  mm <- melt(x)
+  mm$Comparison <- paste(mm$Var1, mm$Var2, sep="-")
+  mm <- mm[,3]
+  #as.data.frame(mm)
+})
+
+outrrr <- as.data.frame(t(outrr))
+
+comp <- melt(outr[1])
+comp$comparisons <- paste(comp$Var1, comp$Var2, sep="-")
+
+names(outrrr) <- comp$comparisons
+row.names(outrrr) <- val
+outrrr$`Low.HP-Low.HP` <- NULL
+
+Results_Benthic_WRT_PW <- outrrr
+
+## Get groupings
+val <- colnames(df.b[,4:22])
+
+getletters <- function(val) 
+{
+  analyte <- val
+  outr <- pairwise.t.test(log.b[,val], log.b$RT, data=log.b, p.adjust.method="holm", pool.sd=FALSE)
+  pwp <- outr$p.value
+  pwp <- fullPTable(pwp)
+  letters0 <- multcompLetters(pwp)
+  letters0$Letters
+}
+outr <- lapply(val, getletters)
+
+pwresults<-as.data.frame(outr)
+names(pwresults) <- val
+pwresults <- t(pwresults)
+pwresults <- data.frame(pwresults)
+
+Results_Benthic_WRT_PW_Groupings <- pwresults
+
+totalres <- merge(Results_Benthic_WRT_OneWay, Results_Benthic_WRT_PW, by="row.names")
+row.names(totalres) <- totalres$Row.names
+totalres$Row.names<-NULL
+totalres <- totalres[order(totalres$`p-value`),]
+TableS3_PW <- totalres
+write.csv(TableS3_PW, file="Results/TableS3_PW.csv")
+
+totalsum <- merge(Results_Benthic_WRT_OneWay, Results_Benthic_WRT_PW_Groupings, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum <- merge(bsummarywrt, totalsum, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum$Pool.NoHP.Mean <- NULL
+totalsum$Pool.NoHP.SD <- NULL
+totalsum$Row.names <- NULL
+totalsum$Row.names.y <- NULL
+totalsum$'F-statistic' <- NULL
+totalsum <- totalsum[order(totalsum$`p-value`),]
+totalsum$`p-value` <- NULL
+totalsum <- totalsum[,c(1,2,7,3,4,9,5,6,8)]
+totalsum <- totalsum[,c(7,8,9,4,5,6,1,2,3)]
+Table2_PW <- totalsum
+write.csv(Table2_PW, file="Results/Table2_PW.csv")
+
+```
+```{r results='asis'}
+
+Ksumm <- kable(TableS3_PW, format="html", digits=2, col.names=c("F-statistic", "p-value", "High-Low", "High-Medium", "Low-Medium"), caption = "Table S3: Water Residence Time Statistics, Bottom Measurements, Welch One-Way Test and Pairwise T Test")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  kable_styling() %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, " " = 5))
+
+```
+```{r results='asis'}
+
+Ksumm <- kable(Table2_PW, format="html", digits=c(1,1,1,1,1,1,1,1,1), col.names=c("Mean", "SD", " ", "Mean", "SD", " ", "Mean", "SD", " "), caption="Table 2: Water Residence Time Groupings, Bottom measurements, Welch One-Way Test and Pairwise T Test")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  kable_styling() %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, "Short" = 3, "Medium" = 3, "Long" = 3))
+
+```
+
+To investigate pool functioning and cycling, downstream subtracted by upstream then compute the mean and standard with the pools grouped by water residence time.
+
+```{r warning=FALSE, message=FALSE}
+
+## make sure dates are in correct format
+df$Date <- as.POSIXct(df$Date, format = "%m/%d/%Y")
+
+## only the upstream and downstream values in wide form
+df.usds<-df[which(df$Location=="Upstream" | df$Location=="Downstream"),]
+
+## clean it up a bit
+df.usds[23] <- NULL
+df.usds[23] <- NULL
+
+## convert to long form
+mdf <- melt(df.usds, id=c("Date","Pool","Location"))
+
+## create two separate dataframes
+mdfds<- mdf[which(mdf$Location=="Downstream"),]
+mdfus<- mdf[which(mdf$Location=="Upstream"),]
+
+## now merge them together based on Date, Pool and variable
+mdata <- merge(mdfds,mdfus,by=c("Date","Pool", "variable"))
+
+## subtract downstream by upstream
+mdata$dsus <- mdata$value.x - mdata$value.y
+
+## now go back to wide format
+dfdsus <- dcast(mdata, Pool + Date ~ variable, value.var="dsus")
+
+## add residence time information
+dfdsus$RT <- rtcv3$RT[match(dfdsus$Pool, rtcv3$Pool)]
+
+## calculate means
+dsusmeans <- aggregate(dfdsus[, 3:21], list(dfdsus$RT), mean, na.rm=TRUE)
+
+## transpose the datasheet
+dsusmeanst <- t(dsusmeans)
+dsusmeanst <-as.data.frame(dsusmeanst)
+colnames(dsusmeanst) <- as.character(unlist(dsusmeanst[1,]))
+dsusmeanst = dsusmeanst[-1, ]
+
+## calculate standard deviation
+dsussd <- aggregate(dfdsus[, 3:21], list(dfdsus$RT), sd, na.rm=TRUE)
+
+## transpose the datasheet
+dsussdt <- t(dsussd)
+dsussdt <-as.data.frame(dsussdt)
+colnames(dsussdt) <- as.character(unlist(dsussdt[1,]))
+dsussdt = dsussdt[-1, ]
+
+## now count number of groupings just to be sure
+library(dplyr)
+mt_mean <- dfdsus %>% 
+  group_by(RT) %>% 
+  summarise(avg_count = n()) 
+pander(mt_mean)
+
+## merge by row names, reorder columns
+dsussummary <- merge(dsusmeanst, dsussdt, by=0, all=TRUE)
+dsussummary <- dsussummary[,c(1,2,6,4,8,3,7,5,9)]
+colClean1 <- function(x){ colnames(x) <- gsub(".x", ".Mean", colnames(x)); x } 
+dsussummary <- colClean1(dsussummary)
+colClean2 <- function(x){ colnames(x) <- gsub(".y", ".SD", colnames(x)); x } 
+dsussummary <- colClean2(dsussummary)
+rownames(dsussummary) <- dsussummary$Row.names
+dsussummary <- dsussummary[-1]
+Results_DSUS_WRT_Summary <- dsussummary
+dsussummary[] <- lapply(dsussummary, function(x) as.numeric(as.character(x)))
+
+```
+
+To investigate pool functioning and cycling, subtract upstream from downstream then compute the mean and standard with the pools grouped by hippo density.
+
+```{r warning=FALSE, message=FALSE}
+
+## add DENSITY information
+dfdsus$Density <- HippoPoolDesc$Density[match(dfdsus$Pool, HippoPoolDesc$Pool)]
+
+## calculate means
+dsusmeans <- aggregate(dfdsus[, 3:21], list(dfdsus$Density), mean, na.rm=TRUE)
+
+## transpose the datasheet
+dsusmeanst <- t(dsusmeans)
+dsusmeanst <-as.data.frame(dsusmeanst)
+colnames(dsusmeanst) <- as.character(unlist(dsusmeanst[1,]))
+dsusmeanst = dsusmeanst[-1, ]
+
+## calculate standard deviation
+dsussd <- aggregate(dfdsus[, 3:21], list(dfdsus$Density), sd, na.rm=TRUE)
+
+## transpose the datasheet
+dsussdt <- t(dsussd)
+dsussdt <-as.data.frame(dsussdt)
+colnames(dsussdt) <- as.character(unlist(dsussdt[1,]))
+dsussdt = dsussdt[-1, ]
+
+## now count number of groupings just to be sure
+library(dplyr)
+mt_mean <- dfdsus %>% 
+  group_by(Density) %>% 
+  summarise(avg_count = n()) 
+pander(mt_mean)
+
+## merge by row names, reorder columns
+dsussummary <- merge(dsusmeanst, dsussdt, by=0, all=TRUE)
+colClean1 <- function(x){ colnames(x) <- gsub(".x", ".Mean", colnames(x)); x } 
+dsussummary <- colClean1(dsussummary)
+colClean2 <- function(x){ colnames(x) <- gsub(".y", ".SD", colnames(x)); x } 
+dsussummary <- colClean2(dsussummary)
+rownames(dsussummary) <- dsussummary$Row.names
+dsussummary <- dsussummary[-1]
+dsussummary <- dsussummary[,c(3,6,2,5,1,4)]
+Results_DSUS_Density_Summary <- dsussummary
+dsussummary[] <- lapply(dsussummary, function(x) as.numeric(as.character(x)))
+
+```
+
+Are there significant differences between hippo pools of different water residence times in regards to their functioning/cycling? (downstream - upstream = flux)
+Kruskal-Wallis test followed by the Dunn's Test
+
+```{r warning=FALSE, message=FALSE}
+
+## apply kruskal wallis to the downstream minus upstream values and output p values
+dfdsuss <- subset(dfdsus, RT!="Pool.NoHP")
+
+kwp <- apply(dfdsuss[,3:21], 2, function(x) kruskal.test(x,dfdsuss[,22])$p.value)
+kwp <- t(kwp)
+kwp <- t(kwp)
+kwp <- as.data.frame(kwp)
+colnames(kwp) <- gsub("V1", "p-value", colnames(kwp)) 
+
+## now get the kw statistic
+kws <- apply(dfdsuss[,3:21], 2, function(x) kruskal.test(x,dfdsuss[,22])$statistic)
+kws <- t(kws)
+kws <- t(kws)
+kws <- as.data.frame(kws)
+colnames(kws) <- gsub("V1", "ChiSquared", colnames(kws)) 
+
+## merge two files together
+totalkwps <- merge(kwp,kws,by=0, all=TRUE)
+rownames(totalkwps) <- totalkwps$Row.names
+totalkwps<- totalkwps[-1]
+Results_DSUS_WRT_KW <- totalkwps[c(2,1)]
+
+## Now the Dunn's Test
+val <- colnames(dfdsuss[,3:21])
+
+outr <- lapply(val, function(y) 
+{
+dunnTest(dfdsuss[,y] ~ RT, data=dfdsuss, method="holm")$res
+})
+
+dunnresults <- sapply(outr, function(x) {
+  p <- x$P.adj
+  n <- outer(rownames(p), colnames(p), paste, sep='v')
+  p <- as.vector(p)
+  names(p) <- x$Comparison
+  p 
+})
+
+## coerce to dataframe, add back in column names, then transpose
+dunnresults <- as.data.frame(dunnresults)
+names(dunnresults) <- val
+dunnresults <- t(dunnresults)
+dunnrslts <- data.frame(dunnresults)
+ 
+Results_DSUS_WRT_Dunn <- dunnrslts
+
+## Get groupings
+val <- colnames(dfdsuss[,3:21])
+    
+getletters <- function(val) 
+{
+  analyte <- val
+  DT <- dunnTest(dfdsuss[,val] ~ dfdsuss$RT, data=dfdsus, method="holm")$res
+  DT<-lapply(DT, function(x) {gsub(" - ", "-", x)})
+  DTList <- DT$P.adj
+  names(DTList) <- DT$Comparison
+  letters0 <- multcompLetters(DTList, threshold=0.05, compare = "<")
+  df<-as.data.frame(letters0$Letters)
+  letters0$Letters
+}
+outr <- lapply(val, getletters)
+
+dunnresults<-as.data.frame(outr)
+names(dunnresults) <- val
+dunnresults <- t(dunnresults)
+dunnresults <- data.frame(dunnresults)
+
+Results_DSUS_WRT_Dunn_Groupings <- dunnresults
+
+totalres <- merge(Results_DSUS_WRT_KW, Results_DSUS_WRT_Dunn, by="row.names")
+row.names(totalres) <- totalres$Row.names
+totalres$Row.names<-NULL
+totalres <- totalres[order(totalres$`p-value`),]
+TableS5 <- totalres
+write.csv(TableS5, file="Results/TableS5.csv")
+
+totalsum <- merge(Results_DSUS_WRT_KW, Results_DSUS_WRT_Dunn_Groupings, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum <- merge(Results_DSUS_WRT_Summary, totalsum, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum$Pool.NoHP.Mean <- NULL
+totalsum$Pool.NoHP.SD <- NULL
+totalsum$Row.names <- NULL
+totalsum$Row.names.y <- NULL
+totalsum$ChiSquared <- NULL
+totalsum <- totalsum[order(totalsum$`p-value`),]
+totalsum$`p-value` <- NULL
+totalsum <- totalsum[,c(5,6,8,3,4,9,1,2,7)]
+Table4 <- totalsum
+write.csv(Table4, file="Results/Table4.csv")
+
+```
+```{r results='asis'}
+
+Ksumm <- kable(TableS5, format="html", digits=2, col.names=c("Chi Squared", "p-value", "Long-Short", "Long-Medium", "Short-Medium"), caption = "Table S5: Water Residence Time Statistics, Downstream - Upstream")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  kable_styling() %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, " " = 5))
+
+```
+```{r results='asis'}
+
+Table4$Low.HP.Mean <- as.numeric(as.character(Table4$Low.HP.Mean))
+Table4$Low.HP.SD <- as.numeric(as.character(Table4$Low.HP.SD))
+Table4$Medium.HP.Mean <- as.numeric(as.character(Table4$Medium.HP.Mean))
+Table4$Medium.HP.SD <- as.numeric(as.character(Table4$Medium.HP.SD))
+Table4$High.HP.Mean <- as.numeric(as.character(Table4$High.HP.Mean))
+Table4$High.HP.SD <- as.numeric(as.character(Table4$High.HP.SD))
+
+Ksumm <- kable(Table4, format="html", digits=1, col.names=c("Mean", "SD", " ", "Mean", "SD", " ", "Mean", "SD", " "), caption = "Table 4: Water Residence Time Groupings, Downstream - Upstream")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  kable_styling() %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, "Short" = 3, "Medium" = 3, "Long" = 3))
+
+```
+
+Are there significant differences between hippo pools of different hippo densities in regards to their functioning/cycling? (downstream - upstream = flux)
+Kruskal-Wallis test followed by the Dunn's Test
+
+```{r warning=FALSE, message=FALSE}
+
+## apply kruskal wallis to the downstream minus upstream values and output p values
+kwp <- apply(dfdsus[,3:21], 2, function(x) kruskal.test(x,dfdsus[,23])$p.value)
+kwp <- t(kwp)
+kwp <- t(kwp)
+kwp <- as.data.frame(kwp)
+colnames(kwp) <- gsub("V1", "p-value", colnames(kwp)) 
+
+## now get the kw statistic
+kws <- apply(dfdsus[,3:21], 2, function(x) kruskal.test(x,dfdsus[,23])$statistic)
+kws <- t(kws)
+kws <- t(kws)
+kws <- as.data.frame(kws)
+colnames(kws) <- gsub("V1", "ChiSquared", colnames(kws)) 
+
+## merge two files together
+totalkwps <- merge(kwp,kws,by=0, all=TRUE)
+rownames(totalkwps) <- totalkwps$Row.names
+totalkwps<- totalkwps[-1]
+Results_DSUS_Density_KW <- totalkwps[,c(2,1)]
+
+## Now the Dunn's Test
+val <- colnames(dfdsus[,3:21])
+
+outr <- lapply(val, function(y) 
+{
+dunnTest(dfdsus[,y] ~ Density, data=dfdsus, method="holm")$res
+})
+
+dunnresults <- sapply(outr, function(x) {
+  p <- x$P.adj
+  n <- outer(rownames(p), colnames(p), paste, sep='v')
+  p <- as.vector(p)
+  names(p) <- x$Comparison
+  p 
+})
+
+## coerce to dataframe, add back in column names, then transpose
+dunnresults <- as.data.frame(dunnresults)
+names(dunnresults) <- val
+dunnresults <- t(dunnresults)
+dunnrslts <- data.frame(dunnresults)
+
+Results_DSUS_Density_Dunn <- dunnrslts
+
+## Get groupings
+val <- colnames(dfdsus[,3:21])
+             
+getletters <- function(val) 
+{
+  analyte <- val
+  DT <- dunnTest(dfdsus[,val] ~ dfdsus$Density, data=dfdsus, method="holm")$res
+  DT<-lapply(DT, function(x) {gsub(" - ", "-", x)})
+  DTList <- DT$P.adj
+  names(DTList) <- DT$Comparison
+  letters0 <- multcompLetters(DTList)
+  df<-as.data.frame(letters0$Letters)
+  letters0$Letters
+}
+
+outr <- lapply(val, getletters)
+dunnresults<-as.data.frame(outr)
+names(dunnresults) <- val
+dunnresults <- t(dunnresults)
+dunnresults <- data.frame(dunnresults)
+
+Results_DSUS_Density_Dunn_Groupings <- dunnresults
+
+totalres <- merge(Results_DSUS_Density_KW, Results_DSUS_Density_Dunn, by="row.names")
+row.names(totalres) <- totalres$Row.names
+totalres$Row.names<-NULL
+totalres <- totalres[order(totalres$`p-value`),]
+TableS4 <- totalres
+
+write.csv(TableS4, file="Results/TableS4.csv")
+
+totalsum <- merge(Results_DSUS_Density_KW, Results_DSUS_Density_Dunn_Groupings, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum <- merge(Results_DSUS_Density_Summary, totalsum, by="row.names")
+row.names(totalsum) <- totalsum$Row.names
+totalsum$Row.names <- NULL
+totalsum$Row.names.y <- NULL
+totalsum$ChiSquared <- NULL
+totalsum <- totalsum[order(totalsum$`p-value`),]
+totalsum$`p-value` <- NULL
+totalsum <- totalsum[,c(1,2,9,3,4,8,5,6,7)]
+Table3 <- totalsum
+
+write.csv(Table3, file="Results/Table3.csv")
+
+```
+```{r results='asis'}
+
+Ksumm <- kable(TableS4, format="html", digits=2, col.names=c("Chi Squared", "p-value", "High-Low", "High-None", "Low-None"), caption = "Table S4: Hippo Pool Density Statistics, Downstream - Upstream")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  kable_styling() %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, " " = 5))
+
+```
+```{r results='asis'}
+
+Table3$None.Mean <- as.numeric(as.character(Table3$None.Mean))
+Table3$None.SD<- as.numeric(as.character(Table3$None.SD))
+Table3$Low.Mean <- as.numeric(as.character(Table3$Low.Mean))
+Table3$Low.SD <- as.numeric(as.character(Table3$Low.SD))
+Table3$High.Mean <- as.numeric(as.character(Table3$High.Mean))
+Table3$High.SD <- as.numeric(as.character(Table3$High.SD))
+
+Ksumm <- kable(Table3, format="html", digits=1, col.names=c("Mean", "SD", " ", "Mean", "SD", " ", "Mean", "SD", " "), caption = "Table 3: Hippo Pool Density, Downstream - Upstream")
+
+Ksumm %>%
+  kable_styling("striped", full_width = F) %>%
+  kable_styling() %>%
+  add_header_above(c("Biogeochemical\nvariables" = 1, "None" = 3, "Low" = 3, "High" = 3))
+
+```
+Figures from the high-density hippo pool transitions
+
+Figure 5
+
+```{r warning=FALSE, message=FALSE}
+
+allfourfacet <- read.csv("depthfull.csv")
+allfourfacet$Date.and.Time <- as.POSIXct(allfourfacet$Date.and.Time, format = "%m/%d/%Y %H:%M")
+allfourfacet$Depth..m.<-allfourfacet$Depth..ft. * 0.3048
+
+lims <- as.POSIXct(strptime(c("2017-08-08","2017-09-24"), format = "%Y-%m-%d"))   
+
+plotFig5 <- ggplot(allfourfacet, aes(x=Date.and.Time, y=Depth..m., colour=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  labs(x="Month-Day 2017", y="Water\nLevel\n(m)") +
+  facet_wrap(~Site,ncol=1, scale="free_y") +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        axis.text.y = element_text(size=8),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=10)),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-08")), linetype="dashed", size=1) +
+  annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2)
+
+plotFig5
+
+ggsave(file="Fig5.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure 6
+
+```{r warning=FALSE, message=FALSE}
+
+DOnbig <- read.csv("DOnbig.csv")
+
+DOnbig$UTC_Date_._Time <- as.POSIXct(DOnbig$UTC_Date_._Time, format = "%Y-%m-%d %H:%M")
+
+subDOnbig<-DOnbig[which(DOnbig$UTC_Date_._Time>"2017-08-12"),]
+subDOnbig<-subDOnbig[which(subDOnbig$UTC_Date_._Time<"2017-09-23"),]
+
+## this adds three hours to all the times
+subDOnbig$UTC_Date_._Time <- subDOnbig$UTC_Date_._Time + hours(3)
+
+## this is to reorder facets
+subDOnbig$facetorder<-factor(subDOnbig$Site, levels = c("Nbig_Surface", "Nbig_Benthic", "Nbig_Downstream"))
+
+labelsnbig <- as_labeller(c(Nbig_Surface = "Surface", Nbig_Benthic = "Bottom", Nbig_Downstream = "Downstream"), label_parsed)
+
+donbigplot <- ggplot(subDOnbig, aes(x=UTC_Date_._Time, y=DO..mg.L., color=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#636363", "#e34a33", "#31a354"),name="Nbig",
+                     breaks=c("Nbig_Surface", "Nbig_Benthic", "Nbig_Downstream"),
+                     labels=c("Surface", "Bottom", "Downstream")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 2),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=15), vjust=1.5),
+        strip.background = element_rect(fill="white", color="black", size=2),
+        legend.position="none") +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5)) +
+  theme(text=element_text(size=12, family="Arial")) +
+  labs(x="Month-Day 2017") +
+  ylab(bquote(atop("DO", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-24 18:15")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-29 23:45")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-1 19:55")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-15 00:05")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-17 21:15")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-18 14:45")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-26 10:25")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-6 10:25")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-07 23:00")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-12 15:00")), linetype="dashed") +
+    annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) +
+  facet_wrap(~facetorder,ncol=1, labeller = labelsnbig) +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  theme(strip.text = element_text(size = 10, margin = margin(t=10)))
+
+allfourfacet <- read.csv("depthfull.csv")
+allfourfacet$Date.and.Time <- as.POSIXct(allfourfacet$Date.and.Time, format = "%m/%d/%Y %H:%M")
+allfourfacet$Depth..m.<-allfourfacet$Depth..ft. * 0.3048
+
+nbigdepth <- allfourfacet[which(allfourfacet$Site=="NBIG"),]
+
+lims <- as.POSIXct(strptime(c("2017-08-08","2017-09-24"), format = "%Y-%m-%d"))   
+
+sp <- ggplot(nbigdepth, aes(x=Date.and.Time, y=Depth..m., colour=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  labs(x="Month-Day 2017", y="Water\nLevel\n(m)") +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=10)),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-08")), linetype="dashed") +
+  annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) 
+
+plotFig6<- plot_grid(donbigplot + theme(legend.position="none"),
+                sp + theme(legend.position = "none"), 
+                labels = c("A", "B"), ncol=1, align="v", rel_heights=c(3,2))
+plotFig6
+
+ggsave(file="Fig6.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure 7
+
+```{r warning=FALSE, message=FALSE}
+
+df <- read.csv("HippoPools2017.csv")
+
+## make sure dates are in correct format
+df$Date <- as.POSIXct(df$Date, format = "%m/%d/%Y")
+df$TIME <- NULL
+df$NH4.N.ug.L <- NULL
+df$NO3N.ppm <- NULL
+df$N2O..umol.L. <- NULL
+
+## make group
+df$grp <- c(1,2)[df$DaysLastFlush %in% c("17","18") + 1L]
+
+df$Location<- gsub("U/S", "Upstream", df$Location)
+df$Location<- gsub("D/S", "Downstream", df$Location)
+df$Location<- gsub("Benthic", "Bottom", df$Location)
+
+## this is to reorder facets
+df$facetorder<-factor(df$Location, levels = c("Upstream", "Surface", "Bottom", "Downstream"))
+
+BOD <- ggplot(df, aes(x=DaysLastFlush, y=BOD5, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder, ncol=4) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) + 
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("BOD ", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=10))) 
+
+DO <- ggplot(df, aes(x=DaysLastFlush, y=HDO_mg.l, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) + 
+  facet_wrap(~facetorder, ncol=4) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("DO ", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +  
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=10))) 
+
+PH <- ggplot(df, aes(x=DaysLastFlush, y=pH_units, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1)  +
+  facet_wrap(~facetorder, ncol=4) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("pH", "(units)"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +  
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=10))) 
+
+Cond <- ggplot(df, aes(x=DaysLastFlush, y=SpCond_uS.cm, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1)  +
+  facet_wrap(~facetorder, ncol=4) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("SpCond", "(" *paste(mu,S) ~cm^-1*")"))) +
+  xlab("Days") +
+  theme(legend.justification = "left") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +  
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=30))) 
+
+ORP <- ggplot(df, aes(x=DaysLastFlush, y=ORP_mV, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1)  +
+  facet_wrap(~facetorder, ncol=4) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("ORP", "(mV)"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +
+  theme(strip.text = element_blank())  +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=10))) 
+
+phy<- plot_grid(BOD + theme(legend.position="none"),
+                DO + theme(legend.position="none"),
+                PH + theme(legend.position = "none"), 
+                ORP + theme(legend.position = "none"),
+                Cond + theme(legend.position = "none"),
+                labels = c("A", "B", "C", "D", "E"), ncol=1, rel_heights = c(1.3,1,1,1,1.4),align="v")
+#phy
+## extract legend from one plot http://htmlpreview.github.io/?https://github.com/wilkelab/cowplot/blob/master/inst/doc/shared_legends.html
+legend <- get_legend(Cond)
+
+plotFig7 <- plot_grid(phy, legend, rel_widths = c(8, 1))
+plotFig7
+
+ggsave(file="Fig7.tiff", width=7, height=7, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure 8
+
+```{r warning=FALSE, message=FALSE}
+## loading estimates in kg per hippo per day
+nperhday <- 0.11875
+
+df <- read.csv("HippoPools2017.csv")
+
+surface2017no1 <- subset(df, Location=="Surface")
+benthic2017no1 <- subset(df, Location=="Benthic")
+
+surface2017no1$grp <- c(1,2)[surface2017no1$DaysLastFlush %in% c("17","18") + 1L]
+benthic2017no1$grp <- c(1,2)[benthic2017no1$DaysLastFlush %in% c("17","18") + 1L]
+
+surface2017no1$Date <- as.POSIXct(surface2017no1$Date, format = "%Y-%m-%d")
+benthic2017no1$Date <- as.POSIXct(benthic2017no1$Date, format = "%Y-%m-%d")
+
+## make sure dates are in correct format
+df$Date <- as.POSIXct(df$Date, format = "%m/%d/%Y")
+
+## only the upstream and downstream values in wide form
+df.usds<-df[which(df$Location=="U/S" | df$Location=="D/S"),]
+
+## clean it up a bit
+df.usds[40] <- NULL
+df.usds[34] <- NULL
+df.usds[5] <- NULL
+
+## convert to long form
+mdf <- melt(df.usds, id=c("Date","Pool","Location", "DaysLastFlush"))
+
+## create two separate dataframes
+mdfds<- mdf[which(mdf$Location=="D/S"),]
+mdfus<- mdf[which(mdf$Location=="U/S"),]
+
+## now merge them together based on Date, Pool and variable
+mdata <- merge(mdfds,mdfus,by=c("Date","Pool", "DaysLastFlush", "variable"))
+
+## subtract downstream by upstream
+mdata$dsus <- mdata$value.x - mdata$value.y
+
+## now go back to wide format
+dfdsus <- dcast(mdata, Pool + Date + DaysLastFlush ~ variable, value.var="dsus")
+
+dfdsus$grp <- c(1,2)[dfdsus$DaysLastFlush %in% c("17","18") + 1L]
+
+dfdsus$Location <- "DS - US"
+mdsus <- melt(dfdsus, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+surface2017no1$TIME <- NULL
+msur <- melt(surface2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+mbe <- melt(benthic2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+mdf <- rbind(mdsus, msur)
+mdf <- rbind(mdf, mbe)
+
+## remove just the flux
+tn <- merge(mdf, rtcv3, by=c("Pool"))
+
+## (days * mg * mg/L) / L
+tn$Estimated <- ifelse(tn$DaysLastFlush>16, (((tn$DaysLastFlush-16) * (nperhday*1000000) * tn$Avg...Hippos)/(tn$Volume..m3.*1000)),((tn$DaysLastFlush * (nperhday*1000000) * tn$Avg...Hippos)/(tn$Volume..m3.*1000)) ) 
+
+tnn <- tn[which(tn$Location=="Surface"),]
+tnn$Location <- "Estimated"
+tnn <- tnn[,c(1:6,15)]
+#tnn$value <- NULL
+names(tnn)[7]<-"value"
+
+mdff <- rbind(mdf, tnn)
+
+mdftn <- mdff[which(mdff$variable=="TN..mg.L."),]
+
+## this is to reorder facets
+mdftn$Location<- gsub("Benthic", "Bottom", mdftn$Location)
+
+mdftn$facetorder<-factor(mdftn$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdddd <- mdftn[which(mdftn$Location=="DS - US" | mdftn$Location=="Surface" | mdftn$Location=="Bottom"),]
+
+mdddd$value <- as.numeric(as.character(mdddd$value))
+
+TN <- ggplot(mdddd, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +  
+  #theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=30))) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("TN ", "(mg" ~ L^-1 * ")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18,21)) +
+  theme(legend.position = "none") +
+  ylim(-5,60) 
+
+mddd <- mdftn[which(mdftn$Location=="Estimated"),]
+
+mddd$value <- as.numeric(as.character(mddd$value))
+
+TNd <- ggplot(mddd, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1, linetype="dashed") +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +   
+  theme(axis.title.y = element_blank()) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18,21)) +
+  theme(axis.text.y = element_blank())+
+  theme(legend.position = "none") +
+  ylim(-5,60)
+
+mdftno <- mdf[which(mdf$variable=="NO3..ug.L."),]
+mdftno$facetorder<-factor(mdftno$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdftno$value <- as.numeric(as.character(mdftno$value))
+
+NO3 <- ggplot(mdftno, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(panel.background = element_blank()) +
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=0))) +
+  ylab(bquote(atop("NO" [3] ^"-" *"-N", "(" *paste(mu,g) ~ L^-1*")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18,21)) 
+
+mdftnh <- mdf[which(mdf$variable=="NH4..ug.L."),]
+mdftnh$facetorder<-factor(mdftnh$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdftnh$value <- as.numeric(as.character(mdftnh$value))
+
+NH4 <- ggplot(mdftnh, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=0))) +
+  ylab(bquote(atop("NH" [4] ^"+" *"-N", "(" *paste(mu,g) ~ L^-1*")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+```
+
+Fig 8
+
+```{r}
+legend <- get_legend(NO3)
+
+plotnitrogen <- plot_grid(TN + theme(legend.position = "none", axis.title.x = element_blank(), axis.text.x=element_blank()), 
+                 NO3 + theme(legend.position = "none"),
+                 NH4 + theme(legend.position="none"), ncol=1, labels = c("A", "B", "C"), rel_heights = c(1.4,1.1,1.4), align="v")
+
+plotFig8 <- plot_grid(plotnitrogen, legend, ncol=2, rel_widths = c(3.5,1))
+
+plotFig8
+
+ggsave(file="Fig8.tiff", width=7, height=5, units="in", compression="lzw", dpi=300)
+
+```
+
+Figure 9
+
+```{r warning=FALSE, message=FALSE}
+## loading estimates in kg per hippo per day
+pperhday <- 0.01158 * 1000 ## put it in ug/L
+
+dfdsus$Location <- "DS - US"
+mdsus <- melt(dfdsus, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+surface2017no1$TIME <- NULL
+msur <- melt(surface2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+mbe <- melt(benthic2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+mdf <- rbind(mdsus, msur)
+mdf <- rbind(mdf, mbe)
+
+## remove just the flux
+tp <- merge(mdf, rtcv3, by=c("Pool"))
+
+## (days * mg * mg/L) / L
+tp$Estimated <- ifelse(tp$DaysLastFlush>16, (((tp$DaysLastFlush-16) * (pperhday*1000000) * tp$Avg...Hippos)/(tp$Volume..m3.*1000)),((tp$DaysLastFlush * (pperhday*1000000) * tp$Avg...Hippos)/(tp$Volume..m3.*1000)) ) 
+
+tpp <- tp[which(tp$Location=="Surface"),]
+tpp$Location <- "Estimated"
+tpp <- tpp[,c(1:6,15)]
+names(tpp)[7]<-"value"
+
+mdff <- rbind(mdf, tpp)
+
+mdftp <- mdff[which(mdff$variable=="TP..ug.L."),]
+
+## this is to reorder facets
+mdftp$Location<- gsub("Benthic", "Bottom", mdftp$Location)
+
+mdftp$facetorder<-factor(mdftp$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdddp <- mdftp[which(mdftp$Location=="DS - US" | mdftp$Location=="Surface" | mdftp$Location=="Bottom"),]
+
+mdddp$value <- as.numeric(as.character(mdddp$value))
+
+TP <- ggplot(mdddp, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("TP ", "(" *paste(mu,g) ~ L^-1 * ")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +
+  theme(legend.position = "none") +
+  ylim(-300,5700) 
+
+mddd <- mdftp[which(mdftp$Location=="Estimated"),]
+
+mddd$value <- as.numeric(as.character(mddd$value))
+
+TPd <- ggplot(mddd, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1, linetype="dashed") +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +   
+  theme(axis.title.y = element_blank()) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +
+  theme(axis.text.y = element_blank())+
+  theme(legend.position = "none") +
+  ylim(-300,5700)
+
+mdftpp <- mdf[which(mdf$variable=="SRP..ug.L."),]
+
+mdftpp$facetorder<-factor(mdftpp$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdftpp$value <- as.numeric(as.character(mdftpp$value))
+
+SRP <- ggplot(mdftpp, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(panel.background = element_blank()) +
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=10))) +
+  ylab(bquote(atop("SRP ", "(" *paste(mu,g) ~ L^-1 * ")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+```
+
+Fig 9
+
+```{r}
+legend <- get_legend(SRP)
+
+plotTP <- plot_grid(TP + theme(legend.position = "none", axis.title.x = element_blank(), axis.text.x=element_blank()), 
+                 SRP + theme(legend.position = "none"),
+                 ncol=1, labels = c("A", "B"), rel_heights = c(1.4,1.4), align="v")
+
+plotFig9 <- plot_grid(plotTP, legend, ncol=2, rel_widths = c(3.5,1))
+
+plotFig9
+
+ggsave(file="Fig9.tiff", width=7, height=4, units="in", compression="lzw", dpi=300)
+
+```
+
+Figure 10
+
+```{r warning=FALSE, message=FALSE}
+## loading estimates in kg per hippo per day
+docperhday <- 0.13176
+
+dfdsus$Location <- "DS - US"
+mdsus <- melt(dfdsus, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+surface2017no1$TIME <- NULL
+msur <- melt(surface2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+benthic2017no1$TIME <- NULL
+benthic2017no1$Date <- as.POSIXct(benthic2017no1$Date, format = "%Y-%m-%d")
+# create new grouping variable
+benthic2017no1$grp <- c(1,2)[benthic2017no1$DaysLastFlush %in% c("17","18") + 1L]
+mbe <- melt(benthic2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+mdf <- rbind(mdsus, msur)
+mdf <- rbind(mdf, mbe)
+
+cc <- merge(mdf, rtcv3, by=c("Pool"))
+
+## (days * mg * mg/L) / L
+cc$Estimated <- ifelse(cc$DaysLastFlush>16, (((cc$DaysLastFlush-16) * (docperhday*1000000) * cc$Avg...Hippos)/(cc$Volume..m3.*1000)), ((cc$DaysLastFlush * (docperhday*1000000) * cc$Avg...Hippos)/(cc$Volume..m3.*1000)) ) 
+
+tcc <- cc[which(cc$Location=="Surface"),]
+tcc$Location <- "Estimated"
+tcc <- tcc[,c(1:6,15)]
+#tcc$value <- NULL
+names(tcc)[7]<-"value"
+
+mdff <- rbind(mdf, tcc)
+
+mdfc <- mdff[which(mdff$variable=="DOC..mg.L."),]
+
+## this is to reorder facets
+mdftc <- mdfc
+mdftc$Location<- gsub("Benthic", "Bottom", mdftc$Location)
+
+mdftc$facetorder<-factor(mdftc$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdddd <- mdftc[which(mdftc$Location=="DS - US" | mdftc$Location=="Surface" | mdftc$Location=="Bottom"),]
+
+mdddd$value <- as.numeric(as.character(mdddd$value))
+
+DOC <- ggplot(mdddd, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("DOC ", "(mg" ~ L^-1 * ")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +
+  theme(legend.position = "none") +
+  ylim(-5,160) 
+
+mddd <- mdftc[which(mdftc$Location=="Estimated"),]
+
+mddd$value <- as.numeric(as.character(mddd$value))
+
+DOCd <- ggplot(mddd, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1, linetype="dashed") +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +   
+  theme(axis.title.y = element_blank()) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) +
+  theme(axis.text.y = element_blank())+
+  theme(legend.position = "none") +
+  ylim(-5,160)
+
+mdftno <- mdf[which(mdf$variable=="CH4..umol.L."),]
+mdftno$facetorder<-factor(mdftno$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdftno$value <- as.numeric(as.character(mdftno$value))
+
+CH4 <- ggplot(mdftno, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(panel.background = element_blank()) +
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=0))) +
+  ylab(bquote(atop("CH"[4],"(" *paste(mu,mol) ~L^-1*")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdftnh <- mdf[which(mdf$variable=="CO2..umol.L."),]
+mdftnh$facetorder<-factor(mdftnh$Location, levels = c("DS - US", "Surface", "Bottom", "Estimated"))
+
+mdftnh$value <- as.numeric(as.character(mdftnh$value))
+
+CO2 <- ggplot(mdftnh, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(strip.text = element_blank()) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=0))) +
+  ylab(bquote(atop("CO"[2],"(" *paste(mu,mol) ~L^-1*")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+```
+
+Fig 10
+
+```{r}
+legend <- get_legend(CO2)
+
+plotcarbon <- plot_grid(DOC + theme(legend.position = "none", axis.title.x = element_blank(), axis.text.x=element_blank()), 
+                 CH4 + theme(legend.position = "none"),
+                 CO2 + theme(legend.position="none"), ncol=1, labels = c("A", "B", "C"), rel_heights = c(1.4,1.1,1.4), align="v")
+
+plotFig10 <- plot_grid(plotcarbon, legend, ncol=2, rel_widths= c(3.5,1))
+
+plotFig10
+
+ggsave(file="Fig10.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Calculate percent difference for DOC
+
+```{r}
+
+dfps <- mdftc[which(mdftc$Location=="Estimated" | mdftc$Location=="Surface"),]
+
+dfps$value <- as.numeric(as.character(dfps$value))
+
+dfpss <- dcast(dfps, Date + Pool + DaysLastFlush ~ Location,  value.var="value")
+
+dfpss$Difference <- (dfpss$Estimated - dfpss$Surface) / dfpss$Surface
+
+aggregate(Difference~Pool, data=dfpss, function(x) c(mean = mean(x), sd = sd(x)))
+
+```
+
+Figure S2
+
+```{r}
+
+DOamhp <- read.csv("DOamhp.csv")
+
+DOamhp$UTC_Date_._Time <- as.POSIXct(DOamhp$UTC_Date_._Time, format = "%Y-%m-%d %H:%M")
+
+subDOamhp<-DOamhp[which(DOamhp$UTC_Date_._Time>"2017-08-11"),]
+subDOamhp<-subDOamhp[which(subDOamhp$UTC_Date_._Time<"2017-09-9"),]
+
+## this adds three hours to all the times
+subDOamhp$UTC_Date_._Time <- subDOamhp$UTC_Date_._Time + hours(3)
+
+labelsamhp <- as_labeller(c(AMHP_Benthic = "Bottom", AMHP_Downstream = "Downstream"), label_parsed)
+
+lims <- as.POSIXct(strptime(c("2017-08-08","2017-09-10"), format = "%Y-%m-%d"))   
+
+doamhpplot <- ggplot(subDOamhp, aes(x=UTC_Date_._Time, y=DO..mg.L., color=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#636363", "#e34a33"),name="AMHP",
+                     breaks=c("AMHP_Benthic", "AMHP_Downstream"),
+                     labels=c("Bottom", "Downstream")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=15), vjust=1.5),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5)) +
+  theme(text=element_text(size=12, family="Arial")) +
+  labs(x="Month-Day 2017") +
+  ylab(bquote(atop("DO ", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-22 18:00")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-24 15:30")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-31 20:30")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-01 19:15")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-06 23:00")), linetype="dashed") +
+  facet_wrap(~Site, ncol=1, labeller = labelsamhp) +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+    annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) 
+
+allfourfacet <- read.csv("depthfull.csv")
+allfourfacet$Date.and.Time <- as.POSIXct(allfourfacet$Date.and.Time, format = "%m/%d/%Y %H:%M")
+allfourfacet$Depth..m.<-allfourfacet$Depth..ft. * 0.3048
+
+amhpdepth <- allfourfacet[which(allfourfacet$Site=="AMHP"),]
+
+ap <- ggplot(amhpdepth, aes(x=Date.and.Time, y=Depth..m., colour=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  labs(x="Month-Day 2017", y="Water\nLevel\n(m)") +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=10)),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-06 23:00")), linetype="dashed") +
+  annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) 
+
+## DO and depth plotted together for AMHP
+plotFigS2<- plot_grid(doamhpplot + theme(legend.position="none"),
+                ap + theme(legend.position = "none"), 
+                labels = c("A", "B"), ncol=1, align="v", rel_heights=c(2,1.5))
+plotFigS2
+
+ggsave(file="FigS2.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure S3
+
+```{r}
+
+DOdchp <- read.csv("DOdchp.csv")
+
+DOdchp$UTC_Date_._Time <- as.POSIXct(DOdchp$UTC_Date_._Time, format = "%Y-%m-%d %H:%M")
+
+subDOdchp<-DOdchp[which(DOdchp$UTC_Date_._Time>"2017-08-11"),]
+subDOdchp<-subDOdchp[which(subDOdchp$UTC_Date_._Time<"2017-09-8"),]
+
+## this adds three hours to all the times
+subDOdchp$UTC_Date_._Time <- subDOdchp$UTC_Date_._Time + hours(3)
+
+labelsdchp <- as_labeller(c(DCHP_Benthic = "Bottom", DCHP_Downstream = "Downstream"), label_parsed)
+
+
+dodchpplot <- ggplot(subDOdchp, aes(x=UTC_Date_._Time, y=DO..mg.L., color=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#636363", "#e34a33"),name="AMHP",
+                     breaks=c("AMHP_Benthic", "AMHP_Downstream"),
+                     labels=c("Bottom", "Downstream")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=15), vjust=1.5),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5)) +
+  theme(text=element_text(size=12, family="Arial")) +
+  labs(x="Month-Day 2017") +
+  ylab(bquote(atop("DO ", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-23 03:00")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-24 15:30")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-31 20:30")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-01 19:15")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-06 23:00")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-06 15:00")), linetype="dashed") +
+  facet_wrap(~Site, ncol=1, labeller = labelsdchp) +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +  
+  annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) 
+
+allfourfacet <- read.csv("depthfull.csv")
+allfourfacet$Date.and.Time <- as.POSIXct(allfourfacet$Date.and.Time, format = "%m/%d/%Y %H:%M")
+allfourfacet$Depth..m.<-allfourfacet$Depth..ft. * 0.3048
+
+dchpdepth <- allfourfacet[which(allfourfacet$Site=="DCHP"),]
+
+dp <- ggplot(dchpdepth, aes(x=Date.and.Time, y=Depth..m., colour=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  labs(x="Month-Day 2017", y="Water\nLevel\n(m)") +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=10)),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-06 23:00")), linetype="dashed") +
+  annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) 
+
+phy<- plot_grid(dodchpplot + theme(legend.position="none"),
+                dp + theme(legend.position = "none"), 
+                labels = c("A", "B"), ncol=1, align="v", rel_heights=c(2,1.5))
+phy
+
+ggsave(file="FigS3.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure S4
+
+```{r}
+
+DOprhp <- read.csv("DOprhp.csv")
+
+DOprhp$UTC_Date_._Time <- as.POSIXct(DOprhp$UTC_Date_._Time, format = "%Y-%m-%d %H:%M")
+
+subDOprhp<-DOprhp[which(DOprhp$UTC_Date_._Time>"2017-08-11"),]
+subDOprhp<-subDOprhp[which(subDOprhp$UTC_Date_._Time<"2017-09-9"),]
+
+## this adds three hours to all the times
+subDOprhp$UTC_Date_._Time <- subDOprhp$UTC_Date_._Time + hours(3)
+
+labelsprhp <- as_labeller(c(PRHP_Benthic = "Bottom", PRHP_Downstream = "Downstream"), label_parsed)
+
+
+doprhpplot <- ggplot(subDOprhp, aes(x=UTC_Date_._Time, y=DO..mg.L., color=Site)) + 
+  geom_line() +  
+  scale_color_manual(values=c("#636363", "#e34a33"),name="AMHP",
+                                    breaks=c("AMHP_Benthic", "AMHP_Downstream"),
+                                    labels=c("Bottom", "Downstream")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=15), vjust=1.5),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5)) +
+  theme(text=element_text(size=12, family="Arial")) +
+  labs(x="Month-Day 2017") +
+  ylab(bquote(atop("DO ", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-24 18:00")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-01 16:15")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-30 00:35")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-09-06 05:00")), linetype="dashed") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-07 23:00")), linetype="dashed") +
+  facet_wrap(~Site, ncol=1, labeller = labelsprhp) +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) 
+
+allfourfacet <- read.csv("depthfull.csv")
+allfourfacet$Date.and.Time <- as.POSIXct(allfourfacet$Date.and.Time, format = "%m/%d/%Y %H:%M")
+allfourfacet$Depth..m.<-allfourfacet$Depth..ft. * 0.3048
+
+prhpdepth <- allfourfacet[which(allfourfacet$Site=="PRHP"),]
+
+pp <- ggplot(prhpdepth, aes(x=Date.and.Time, y=Depth..m., colour=Site)) + 
+  geom_line() +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  labs(x="Month-Day 2017", y="Water\nLevel\n(m)") +
+  scale_x_datetime(date_breaks = "3 day", date_labels =  "%m-%d", limits = lims) +
+  theme(text=element_text(size=12, family="Arial")) +
+  theme(axis.text.x = element_text(angle=45, vjust=0.5),
+        panel.border = element_rect(color = "black", fill = NA, size = 1),
+        axis.title.y = element_text(angle=0, vjust=0.5),
+        strip.text = element_text(hjust = .9),
+        strip.text.x = element_text(size=12, margin=margin(b=10)),
+        strip.background = element_rect(fill="white", color="black", size=1),
+        legend.position="none") +
+  geom_vline(xintercept = as.numeric(as.POSIXct("2017-08-07 23:00")), linetype="dashed") +
+  annotate("rect", xmin = as.POSIXct("2017-08-9"), xmax = as.POSIXct("2017-08-26"), ymin = -Inf, ymax = Inf, fill = "black", alpha = .2) 
+
+phy<- plot_grid(doprhpplot + theme(legend.position="none"),
+                pp + theme(legend.position = "none"), 
+                labels = c("A", "B"), ncol=1, align="v", rel_heights=c(2,1.5))
+phy
+
+ggsave(file="FigS4.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure S5
+
+```{r warning=FALSE, message=FALSE}
+df <- read.csv("HippoPools2017.csv")
+
+surface2017no1 <- subset(df, Location=="Surface")
+benthic2017no1 <- subset(df, Location=="Benthic")
+
+surface2017no1$grp <- c(1,2)[surface2017no1$DaysLastFlush %in% c("17","18") + 1L]
+benthic2017no1$grp <- c(1,2)[benthic2017no1$DaysLastFlush %in% c("17","18") + 1L]
+
+surface2017no1$Date <- as.POSIXct(surface2017no1$Date, format = "%Y-%m-%d")
+benthic2017no1$Date <- as.POSIXct(benthic2017no1$Date, format = "%Y-%m-%d")
+
+## make sure dates are in correct format
+df$Date <- as.POSIXct(df$Date, format = "%m/%d/%Y")
+
+## only the upstream and downstream values in wide form
+df.usds<-df[which(df$Location=="U/S" | df$Location=="D/S"),]
+
+## clean it up a bit
+df.usds[40] <- NULL
+df.usds[34] <- NULL
+df.usds[5] <- NULL
+
+## convert to long form
+mdf <- melt(df.usds, id=c("Date","Pool","Location", "DaysLastFlush"))
+
+## create two separate dataframes
+mdfds<- mdf[which(mdf$Location=="D/S"),]
+mdfus<- mdf[which(mdf$Location=="U/S"),]
+
+## now merge them together based on Date, Pool and variable
+mdata <- merge(mdfds,mdfus,by=c("Date","Pool", "DaysLastFlush", "variable"))
+
+## subtract downstream by upstream
+mdata$dsus <- mdata$value.x - mdata$value.y
+
+## now go back to wide format
+dfdsus <- dcast(mdata, Pool + Date + DaysLastFlush ~ variable, value.var="dsus")
+
+dfdsus$grp <- c(1,2)[dfdsus$DaysLastFlush %in% c("17","18") + 1L]
+
+dfdsus$Location <- "DS - US"
+mdsus <- melt(dfdsus, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+surface2017no1$TIME <- NULL
+msur <- melt(surface2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+mbe <- melt(benthic2017no1, id=c("Date","Pool","Location", "DaysLastFlush", "grp"))
+
+mdf <- rbind(mdsus, msur)
+mdf <- rbind(mdf, mbe)
+
+mdf$Location<- gsub("Benthic", "Bottom", mdf$Location)
+
+ mdf$value <- as.numeric(as.character(mdf$value))
+
+mdfs <- mdf[which(mdf$variable=="SO4.ppm"),]
+
+## this is to reorder facets
+mdfs$facetorder<-factor(mdfs$Location, levels = c("DS - US", "Surface", "Bottom"))
+
+SO4 <- ggplot(mdfs, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("SO" [4] ^"2-", "(mg " * L^-1*")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdfh <- mdf[which(mdf$variable=="H2S..ug.L."),]
+
+## this is to reorder facets
+mdfh$facetorder<-factor(mdfh$Location, levels = c("DS - US", "Surface", "Bottom"))
+
+H2S <- ggplot(mdfh, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_blank(),
+        strip.text.y = element_text(size=12, margin=margin(b=100))) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("H" [2]*"S", "(" * paste(mu,g) ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdff <- mdf[which(mdf$variable=="FEII..ug.L."),]
+
+## this is to reorder facets
+mdff$facetorder<-factor(mdff$Location, levels = c("DS - US", "Surface", "Bottom"))
+
+FEII <- ggplot(mdff, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_blank()) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("Fe(II)", "(" * paste(mu,g) ~ L^-1 * ")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+reduced<- plot_grid(SO4 + theme(legend.position="none"),
+                   H2S + theme(legend.position = "none"),
+                   FEII + theme(legend.position="none"), labels = c("A", "B", "C"), ncol=1, rel_heights=c(1.2,1,1.3), align="v")
+
+legend <- get_legend(SO4)
+
+plotFigS5 <- plot_grid(reduced, legend, rel_widths = c(4, 1))
+plotFigS5
+
+ggsave(file="FigS5.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure S6
+
+```{r warning=FALSE, message=FALSE}
+mdf$facetorder<-factor(mdf$Location, levels = c("DS - US", "Surface", "Bottom"))
+
+mdfF <- mdf[which(mdf$variable=="F.ppm"),]
+FL <- ggplot(mdfF, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  theme(axis.title.y = element_text(angle=0, vjust=0.5)) +
+  ylab(bquote(atop("F" ^"-", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdfCL <- mdf[which(mdf$variable=="Cl.ppm"),]
+CL <- ggplot(mdfCL, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_blank(),
+        strip.text.y = element_text(size=12, margin=margin(b=100))) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("Cl" ^"-", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdfBR <- mdf[which(mdf$variable=="Br.ppm"),]
+BR <- ggplot(mdfBR, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_blank()) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("Br" ^"-", "(mg" ~ L^-1 * ")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+anions<- plot_grid(FL + theme(legend.position="none"),
+                 CL + theme(legend.position = "none"),                    
+                 BR + theme(legend.position = "none"),
+                 labels = c("A", "B", "C"), ncol=1, rel_heights=c(1.2,1,1.3), align="v")
+legend <- get_legend(FL)
+
+plotFigS6 <- plot_grid(anions, legend, rel_widths = c(4, 1))
+plotFigS6
+
+ggsave(file="FigS6.tiff", width=7, height=5, units="in", dpi=300, compression = "lzw")
+
+```
+
+Figure S7
+
+```{r warning=FALSE, message=FALSE}
+
+mdfK <- mdf[which(mdf$variable=="K.ppm"),]
+KK <- ggplot(mdfK, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_text(hjust = .5, face="bold", size=12)) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("K" ^"+", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdfNA <- mdf[which(mdf$variable=="Na.ppm"),]
+Na <- ggplot(mdfNA, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_blank()) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("Na" ^"+", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdfMG <- mdf[which(mdf$variable=="Mg.ppm"),]
+MG <- ggplot(mdfMG, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_blank(),
+        strip.text.y = element_text(size=12, margin=margin(b=100))) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("Mg" ^"2+", "(mg" ~ L^-1 * ")"))) +
+  theme(axis.title.x = element_blank(), axis.text.x=element_blank()) +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+mdfCA <- mdf[which(mdf$variable=="Ca.ppm"),]
+CA <- ggplot(mdfCA, aes(x=DaysLastFlush, y=value, color=Pool, group=interaction(Pool,grp))) + 
+  theme_few() +
+  geom_line(size=1) +
+  facet_wrap(~facetorder) +
+  geom_point(aes(shape=Pool, fill=Pool),size=2, stroke=1, colour="black") +
+  scale_linetype_manual(values = c(1,2,3,4)) +
+  scale_shape_manual(values=c(0,1,2,5)) +
+  scale_color_manual(values=c("#e66101", "#fdb863", "#b2abd2", "#5e3c99")) +
+  geom_vline(xintercept = 0.5, linetype="dashed") +
+  geom_vline(xintercept = 16, linetype="dashed") +
+  theme(text=element_text(size=12, family="Arial"),
+        strip.text = element_blank()) +  
+  theme(axis.title.y = element_text(angle=0, vjust=0.5, margin=margin(r=20))) +
+  ylab(bquote(atop("Ca" ^"2+", "(mg" ~ L^-1 * ")"))) +
+  xlab("Days") +
+  scale_x_continuous(breaks=c(0,3,6,9,12,15,18)) 
+
+anions<- plot_grid(KK + theme(legend.position = "none"),
+                    Na + theme(legend.position = "none"),
+                    MG + theme(legend.position = "none"),
+                    CA + theme(legend.position="none"), labels = c("A", "B", "C", "D"), ncol=1, rel_heights=c(1.2,1,1,1.3), align="v")
+
+## extract legend from one plot http://htmlpreview.github.io/?https://github.com/wilkelab/cowplot/blob/master/inst/doc/shared_legends.html
+legend <- get_legend(KK)
+
+plotFigS7 <- plot_grid(anions, legend, rel_widths = c(4, 1))
+plotFigS7
+
+ggsave(file="FigS7.tiff", width=7, height=7, units="in", dpi=300, compression = "lzw")
+
+```
+
+
+Session info
+
+```{r}
+pander(sessionInfo())
+```
+
